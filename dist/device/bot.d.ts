@@ -37,6 +37,7 @@ export declare class Bot extends deviceBase {
     multiPressCount: number;
     botUpdateInProgress: boolean;
     doBotUpdate: Subject<void>;
+    private botBleWarmupDone;
     /**
      * Constructs a new instance of the Bot device.
      *
@@ -50,6 +51,7 @@ export declare class Bot extends deviceBase {
      * @constructor
      */
     constructor(platform: SwitchBotPlatform, accessory: PlatformAccessory, device: device & devicesConfig);
+    private warmupBotBleConnection;
     /**
      * Parse the device status from the SwitchBotBLE API
      */
@@ -76,6 +78,7 @@ export declare class Bot extends deviceBase {
      */
     pushChanges(): Promise<void>;
     private discoverBotDeviceWithFallback;
+    private runBotBleActionWithRetry;
     BLEpushChanges(): Promise<void>;
     openAPIpushChanges(): Promise<void>;
     /**

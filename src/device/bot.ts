@@ -27,6 +27,11 @@ function isDiscoveryTimeoutError(error: unknown): boolean {
   return message.includes('discovery timeout') || message.includes('no switchbot devices found')
 }
 
+function isTransientBleConnectError(error: unknown): boolean {
+  const message = `${(error as any)?.message ?? error}`.toLowerCase()
+  return message.includes('failed to discover services') || message.includes('disconnected 62')
+}
+
 async function discoverBotByAddress(
   switchBotBLE: SwitchBotBLE,
   bleMac: string,
@@ -200,6 +205,7 @@ export class Bot extends deviceBase {
   // Updates
   botUpdateInProgress!: boolean
   doBotUpdate!: Subject<void>
+  private botBleWarmupDone!: boolean
 
   /**
    * Constructs a new instance of the Bot device.
@@ -225,6 +231,7 @@ export class Bot extends deviceBase {
     // this is subject we use to track when we need to POST changes to the SwitchBot API
     this.doBotUpdate = new Subject()
     this.botUpdateInProgress = false
+    this.botBleWarmupDone = false
 
     // Initialize Battery property
     accessory.context.Battery = accessory.context.Battery ?? {}
@@ -336,6 +343,10 @@ export class Bot extends deviceBase {
         await this.refreshStatus()
       })
 
+    // Password-protected Bots can fail the first BLE service discovery after bridge start.
+    // Warm up once so the first user-triggered command is less likely to fail.
+    void this.warmupBotBleConnection()
+
     // Watch for Bot change events
     // We put in a debounce of 1000ms so we don't make duplicate calls
     this.doBotUpdate
@@ -362,6 +373,30 @@ export class Bot extends deviceBase {
         }
         this.botUpdateInProgress = false
       })
+  }
+
+  private async warmupBotBleConnection(): Promise<void> {
+    if (this.botBleWarmupDone) {
+      return
+    }
+    if (!this.BLE) {
+      return
+    }
+    const botPassword = (this.device as botConfig).password
+    if (!botPassword) {
+      return
+    }
+    this.botBleWarmupDone = true
+    try {
+      const switchBotBLE = this.platform.switchBotBLE
+      const formattedDeviceId = formatDeviceIdAsMac(this.device.deviceId)
+      this.device.bleMac = formattedDeviceId
+      this.debugLog(`Starting one-time password Bot BLE warm-up for ${this.device.deviceId}.`)
+      await this.discoverBotDeviceWithFallback(switchBotBLE, botPassword)
+      this.debugLog(`Password Bot BLE warm-up completed for ${this.device.deviceId}.`)
+    } catch (e: any) {
+      this.warnLog(`Password Bot BLE warm-up skipped/failed for ${this.device.deviceId}: ${e.message ?? e}`)
+    }
   }
 
   /**
@@ -624,6 +659,28 @@ export class Bot extends deviceBase {
     }
   }
 
+  private async runBotBleActionWithRetry(
+    switchBotBLE: SwitchBotBLE,
+    action: BotBleAction,
+    botPassword?: string,
+  ): Promise<void> {
+    const maxAttempts = 2
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const botDevice = await this.discoverBotDeviceWithFallback(switchBotBLE, botPassword)
+        await executeBotBleAction(botDevice, action, botPassword)
+        return
+      } catch (e: any) {
+        const shouldRetry = attempt < maxAttempts && isTransientBleConnectError(e)
+        if (!shouldRetry) {
+          throw e
+        }
+        this.warnLog(`Transient BLE connect error for ${this.device.deviceId}. Retrying command attempt ${attempt + 1}/${maxAttempts}.`)
+        await new Promise(resolve => setTimeout(resolve, 700))
+      }
+    }
+  }
+
   async BLEpushChanges(): Promise<void> {
     this.debugLog('BLEpushChanges')
     if ((this.On !== this.accessory.context.On) || this.allowPush) {
@@ -655,9 +712,8 @@ export class Bot extends deviceBase {
         this.debugLog(`Bot Mode: ${this.botMode}`)
         if (this.botMode === 'press') {
           try {
-            const botDevice = await this.discoverBotDeviceWithFallback(switchBotBLE, botPassword)
             this.infoLog(`On: ${this.On}`)
-            await executeBotBleAction(botDevice, 0x00, botPassword)
+            await this.runBotBleActionWithRetry(switchBotBLE, 0x00, botPassword)
             this.successLog(`On: ${this.On} sent over SwitchBot BLE, sent successfully`)
             await this.updateHomeKitCharacteristics()
             setTimeout(async () => {
@@ -678,16 +734,14 @@ export class Bot extends deviceBase {
           }
         } else if (this.botMode === 'switch') {
           try {
-            const botDevice = await this.discoverBotDeviceWithFallback(switchBotBLE, botPassword)
             this.infoLog(`On: ${this.On}`)
-            this.warnLog(`device: ${JSON.stringify({ id: botDevice.id, address: botDevice.address, model: botDevice.model })}`)
             await this.retryBLE({
               max: this.maxRetryBLE(),
               fn: async () => {
                 if (this.On) {
-                  return await executeBotBleAction(botDevice, 0x01, botPassword)
+                  return await this.runBotBleActionWithRetry(switchBotBLE, 0x01, botPassword)
                 } else {
-                  return await executeBotBleAction(botDevice, 0x02, botPassword)
+                  return await this.runBotBleActionWithRetry(switchBotBLE, 0x02, botPassword)
                 }
               },
             })
