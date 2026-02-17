@@ -343,8 +343,7 @@ export class Bot extends deviceBase {
         await this.refreshStatus()
       })
 
-    // Password-protected Bots can fail the first BLE service discovery after bridge start.
-    // Warm up once so the first user-triggered command is less likely to fail.
+    // Warm up once so the first user-triggered Bot BLE command is less likely to fail.
     void this.warmupBotBleConnection()
 
     // Watch for Bot change events
@@ -382,20 +381,16 @@ export class Bot extends deviceBase {
     if (!this.BLE) {
       return
     }
-    const botPassword = (this.device as botConfig).password
-    if (!botPassword) {
-      return
-    }
     this.botBleWarmupDone = true
     try {
       const switchBotBLE = this.platform.switchBotBLE
       const formattedDeviceId = formatDeviceIdAsMac(this.device.deviceId)
       this.device.bleMac = formattedDeviceId
-      this.debugLog(`Starting one-time password Bot BLE warm-up for ${this.device.deviceId}.`)
-      await this.discoverBotDeviceWithFallback(switchBotBLE, botPassword)
-      this.debugLog(`Password Bot BLE warm-up completed for ${this.device.deviceId}.`)
+      this.debugLog(`Starting one-time Bot BLE warm-up for ${this.device.deviceId}.`)
+      await this.discoverBotDeviceWithFallback(switchBotBLE)
+      this.debugLog(`Bot BLE warm-up completed for ${this.device.deviceId}.`)
     } catch (e: any) {
-      this.warnLog(`Password Bot BLE warm-up skipped/failed for ${this.device.deviceId}: ${e.message ?? e}`)
+      this.warnLog(`Bot BLE warm-up skipped/failed for ${this.device.deviceId}: ${e.message ?? e}`)
     }
   }
 
@@ -631,17 +626,14 @@ export class Bot extends deviceBase {
 
   private async discoverBotDeviceWithFallback(
     switchBotBLE: SwitchBotBLE,
-    botPassword?: string,
   ): Promise<WoHand> {
     const bleMac = this.device.bleMac ?? formatDeviceIdAsMac(this.device.deviceId)
     const discoveryDurationMs = Math.max(this.scanDuration * 1000, 5000)
 
-    if (botPassword) {
-      try {
-        return await discoverBotByAddress(switchBotBLE, bleMac, discoveryDurationMs)
-      } catch (e: any) {
-        this.warnLog(`Address-based Bot discovery failed for ${this.device.deviceId}: ${e.message ?? e}. Falling back to model discovery.`)
-      }
+    try {
+      return await discoverBotByAddress(switchBotBLE, bleMac, discoveryDurationMs)
+    } catch (e: any) {
+      this.warnLog(`Address-based Bot discovery failed for ${this.device.deviceId}: ${e.message ?? e}. Falling back to model discovery.`)
     }
 
     try {
@@ -651,8 +643,8 @@ export class Bot extends deviceBase {
       }
       return deviceList[0]
     } catch (e: any) {
-      if (botPassword && isDiscoveryTimeoutError(e)) {
-        this.warnLog(`Bot discovery by model timed out for ${this.device.deviceId}. Trying address-based fallback discovery.`)
+      if (isDiscoveryTimeoutError(e)) {
+        this.warnLog(`Bot discovery by model timed out for ${this.device.deviceId}. Trying address-based fallback discovery again.`)
         return await discoverBotByAddress(switchBotBLE, bleMac, discoveryDurationMs)
       }
       throw e
@@ -667,7 +659,7 @@ export class Bot extends deviceBase {
     const maxAttempts = 2
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const botDevice = await this.discoverBotDeviceWithFallback(switchBotBLE, botPassword)
+        const botDevice = await this.discoverBotDeviceWithFallback(switchBotBLE)
         await executeBotBleAction(botDevice, action, botPassword)
         return
       } catch (e: any) {
@@ -687,7 +679,7 @@ export class Bot extends deviceBase {
       this.debugLog(`BLEpushChanges On: ${this.On} OnCached: ${this.accessory.context.On}`)
       const switchBotBLE = this.platform.switchBotBLE
       const botPassword = (this.device as botConfig).password
-      const shouldPausePlatformScan = Boolean(botPassword && this.config.options?.BLE && !this.device.disablePlatformBLE)
+      const shouldPausePlatformScan = Boolean(this.config.options?.BLE && !this.device.disablePlatformBLE)
       if (botPassword) {
         try {
           validateBotPassword(botPassword)
@@ -700,7 +692,7 @@ export class Bot extends deviceBase {
         if (shouldPausePlatformScan) {
           try {
             await switchBotBLE.stopScan()
-            this.debugLog('Paused platform BLE scanning for password Bot command execution.')
+            this.debugLog('Paused platform BLE scanning for Bot command execution.')
           } catch {
             this.debugLog('Platform BLE scanning was not active or could not be paused.')
           }
@@ -723,8 +715,10 @@ export class Bot extends deviceBase {
             }, 500)
           } catch (e: any) {
             await this.apiError(e)
-            if (botPassword && !isDiscoveryTimeoutError(e)) {
+            if (!isDiscoveryTimeoutError(e) && botPassword) {
               this.errorLog(`Bot BLE password command failed for ${this.device.deviceId}. Verify password and BLE response.`)
+            } else if (!isDiscoveryTimeoutError(e)) {
+              this.errorLog(`Bot BLE command failed for ${this.device.deviceId}.`)
             }
             if (isDiscoveryTimeoutError(e)) {
               this.errorLog(`Bot BLE discovery failed for ${this.device.deviceId}. Device was not discovered before timeout.`)
@@ -749,8 +743,10 @@ export class Bot extends deviceBase {
             await this.updateHomeKitCharacteristics()
           } catch (e: any) {
             await this.apiError(e)
-            if (botPassword && !isDiscoveryTimeoutError(e)) {
+            if (!isDiscoveryTimeoutError(e) && botPassword) {
               this.errorLog(`Bot BLE password command failed for ${this.device.deviceId}. Verify password and BLE response.`)
+            } else if (!isDiscoveryTimeoutError(e)) {
+              this.errorLog(`Bot BLE command failed for ${this.device.deviceId}.`)
             }
             if (isDiscoveryTimeoutError(e)) {
               this.errorLog(`Bot BLE discovery failed for ${this.device.deviceId}. Device was not discovered before timeout.`)
@@ -767,7 +763,7 @@ export class Bot extends deviceBase {
         if (shouldPausePlatformScan) {
           try {
             await switchBotBLE.startScan()
-            this.debugLog('Resumed platform BLE scanning after password Bot command execution.')
+            this.debugLog('Resumed platform BLE scanning after Bot command execution.')
           } catch (e: any) {
             this.errorLog(`Failed to resume platform BLE scanning: ${e.message ?? e}`)
           }
