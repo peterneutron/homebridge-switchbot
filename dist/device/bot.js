@@ -504,8 +504,17 @@ export class Bot extends deviceBase {
     }
     async discoverBotDeviceWithFallback(switchBotBLE, botPassword) {
         const bleMac = this.device.bleMac ?? formatDeviceIdAsMac(this.device.deviceId);
+        const discoveryDurationMs = Math.max(this.scanDuration * 1000, 5000);
+        if (botPassword) {
+            try {
+                return await discoverBotByAddress(switchBotBLE, bleMac, discoveryDurationMs);
+            }
+            catch (e) {
+                this.warnLog(`Address-based Bot discovery failed for ${this.device.deviceId}: ${e.message ?? e}. Falling back to model discovery.`);
+            }
+        }
         try {
-            const deviceList = await switchBotBLE.discover({ model: this.device.bleModel, quick: true, id: bleMac });
+            const deviceList = await switchBotBLE.discover({ duration: discoveryDurationMs, model: this.device.bleModel, quick: true, id: bleMac });
             if (deviceList.length === 0) {
                 throw new Error('No device found');
             }
@@ -514,7 +523,7 @@ export class Bot extends deviceBase {
         catch (e) {
             if (botPassword && isDiscoveryTimeoutError(e)) {
                 this.warnLog(`Bot discovery by model timed out for ${this.device.deviceId}. Trying address-based fallback discovery.`);
-                return await discoverBotByAddress(switchBotBLE, bleMac, this.scanDuration * 1000);
+                return await discoverBotByAddress(switchBotBLE, bleMac, discoveryDurationMs);
             }
             throw e;
         }
@@ -525,6 +534,7 @@ export class Bot extends deviceBase {
             this.debugLog(`BLEpushChanges On: ${this.On} OnCached: ${this.accessory.context.On}`);
             const switchBotBLE = this.platform.switchBotBLE;
             const botPassword = this.device.password;
+            const shouldPausePlatformScan = Boolean(botPassword && this.config.options?.BLE && !this.device.disablePlatformBLE);
             if (botPassword) {
                 try {
                     validateBotPassword(botPassword);
@@ -535,6 +545,15 @@ export class Bot extends deviceBase {
                 }
             }
             try {
+                if (shouldPausePlatformScan) {
+                    try {
+                        await switchBotBLE.stopScan();
+                        this.debugLog('Paused platform BLE scanning for password Bot command execution.');
+                    }
+                    catch {
+                        this.debugLog('Platform BLE scanning was not active or could not be paused.');
+                    }
+                }
                 const formattedDeviceId = formatDeviceIdAsMac(this.device.deviceId);
                 this.device.bleMac = formattedDeviceId;
                 this.debugLog(`bleMac: ${this.device.bleMac}`);
@@ -602,6 +621,17 @@ export class Bot extends deviceBase {
             }
             catch (error) {
                 this.errorLog(`failed to format device ID as MAC, Error: ${error}`);
+            }
+            finally {
+                if (shouldPausePlatformScan) {
+                    try {
+                        await switchBotBLE.startScan();
+                        this.debugLog('Resumed platform BLE scanning after password Bot command execution.');
+                    }
+                    catch (e) {
+                        this.errorLog(`Failed to resume platform BLE scanning: ${e.message ?? e}`);
+                    }
+                }
             }
         }
         else {
