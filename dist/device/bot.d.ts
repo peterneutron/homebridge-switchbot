@@ -1,5 +1,6 @@
 import type { CharacteristicValue, PlatformAccessory } from 'homebridge';
-import type { botServiceData, botStatus, botWebhookContext, device, SwitchBotBLE, WoHand } from 'node-switchbot';
+import type { botServiceData, botStatus, botWebhookContext, device, SwitchBotBLE } from 'node-switchbot';
+import { WoHand } from 'node-switchbot';
 import { Subject } from 'rxjs';
 import type { SwitchBotPlatform } from '../platform.js';
 import type { devicesConfig } from '../settings.js';
@@ -74,6 +75,7 @@ export declare class Bot extends deviceBase {
      * Bot         "command"    "press"    "default"      =   trigger press
      */
     pushChanges(): Promise<void>;
+    private discoverBotDeviceWithFallback;
     BLEpushChanges(): Promise<void>;
     openAPIpushChanges(): Promise<void>;
     /**
